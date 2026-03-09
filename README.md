@@ -23,7 +23,7 @@ Software versions :
 1. FastQC (v.0.12.1)
 2. STAR2 (v.2.7.3a) 
 3. GENCODE v39 gene annotation
-4. Analysis of tRNA expression, fragmentation, modifications were performed with custom scripts developed by Frietze et al. (https://github.com/Luke-F1875/MSRseq_data_processing_pipeline)
+
 
 R pacakges  
 R version (v4.4.0) was used for all analysis. 
