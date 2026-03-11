@@ -1,5 +1,5 @@
 ---
-title: "GSVA Analysis & development of SPEN score"
+title: "GSVA Analysis"
 author: "Sonali Arora"
 date: "Aug 11, 2025"
 output: 
