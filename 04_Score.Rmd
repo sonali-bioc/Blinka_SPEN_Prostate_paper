@@ -21,6 +21,9 @@ up3 = c(
     "MTBP",    "TEAD2",  "MAP2",    "VIM", "NEK2" ,    "BORA",  "E2F7",    "PLK4",
     "CDK1",    "KLF7", "LIN7A",    "PAK6", "HASPIN"
 )
+ARG.6 = c( "AR" ,     "KLK2",    "KLK3" ,   "NKX3-1" , "TMPRSS2", "PMEPA1" ), 
+NE.10 = c( "SYP" ,   "CHGA"  , "CHGB",   "NKX2-1", "ENO2"  , "ELAVL4" ,"SCG3",   "PCSK1" ,
+      "SCN3A" , "CHRNB2"  ),
 
 tpm = readRDS("batch_corrected_log2tpm_prostate_4datasets_no_gtex_no_pdx.rds")
 umap_data1 = readRDS("metadata_prostate_4datasets_no_gtex_no_pdx.rds")
@@ -34,8 +37,7 @@ g5= which(umap_data1$dataset =="uw-TAN")
 tpm = tpm[ , c( g1, g2, g3, g4, g5)]
 umap_data1 = umap_data1[ c( g1, g2, g3,g4, g5), ]
 
-set1 = list(up_new =up3)
-
+set1 = list(up_new =up3, ARG.6 = ARG.6 , NE.10 )
 
 gsvapar <- gsvaParam(tpm, set1, maxDiff=TRUE)
 res <- gsva(gsvapar) 
@@ -55,6 +57,32 @@ dev.off()
 
 write.table(umap_data1, "spen_sig_21genes.txt", sep="\t",
             quote=F, row.names=F, col.names=T)
+
+mygenes = c( "ARG.6", "NE.10",  "CCP.31")
+
+l1 = lapply(mygenes, function(goi) {
+    mydf = bigdf[which(bigdf$group == "Met"), ]    
+    max1 = max(mydf[,"sig21genes"], na.rm = TRUE)
+    max2 = max(mydf[,goi], na.rm = TRUE)
+    max0 = max(c(max1, max2), na.rm = TRUE)
+    
+    p1 = ggplot(mydf, aes(x = .data[["sig21genes"]], y = .data[[goi]])) + 
+        geom_point() +
+        geom_smooth(method = "lm", se = FALSE, color = "blue") + 
+        stat_cor(method = "pearson", label.x = 0, label.y =0, color = "red")+ # max0 * 0.95) +
+        #stat_regline_equation(label.x = 0, label.y = max0 * 0.85) +
+        xlab("21 genes sig") + 
+        ylab(goi) + 
+        xlim(0, max0) + 
+        ylim(0, max0) +
+        ggtitle(paste0(goi, " vs 21genes sig")) +
+        theme_bw()    
+    p1
+})
+pdf("Figure_21genes_sig_correlation_with_others.pdf", width = 15, height = 7)
+ggarrange(plotlist = l1, nrow = 2, ncol = 4)
+dev.off()
+
 ```
 ## Survival Analysis  for SU2C 
 
