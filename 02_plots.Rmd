@@ -1,0 +1,300 @@
+---
+title: "Figures: Volcano Plot"
+author: "Sonali Arora"
+date: "March 11, 2026"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+## Volcano plots  
+
+```{r}
+
+## for volcano plots  - mRNA Seq Enza WT vs KO
+mrna_enza_up <- c(
+    "E2F7", "E2F8", "CDK1", "BORA", "TERT", 
+    "PAK3", "Pak6", "Lin7a", "HNF4G", "Alb"
+)
+
+mrna_enza_down <- c(
+    "UGT2B15", "Cdkn2b", "Cdkn1a"
+)
+
+mrna_enza_unchanged <- c("AR")
+goi = toupper(c(mrna_enza_up, mrna_enza_down, mrna_enza_unchanged ))
+#volcano plot 
+rna_fls = file.path(rna_Dir, 
+                    "DESeq2_analysis_ENZA_SPEN_KO_vs_ENZA_SPEN_WT_LFC_0.58_fdr_0.05.xlsx")
+rna_ad_vs_ne= as.data.frame(read_xlsx(rna_fls, sheet = 1))
+
+#volcano plot 
+res = rna_ad_vs_ne[, c( "gene" ,"log2FoldChange","padj" )]
+res$delabel = NA_character_
+midx_up = na.omit( match(goi, rna_ad_vs_ne$gene) )
+res$delabel[midx_up] = res$gene[midx_up]
+
+# Prepare data
+res$log10padj = -log10(res$padj)
+res$log10padj[which(res$log10padj > 40)] = 40
+res$log2FoldChange[which(res$log2FoldChange > 3)] = 3
+res$log2FoldChange[which(res$log2FoldChange < -3)] = -3
+
+lfc = log2(1.25)
+
+res$status <- "NS"  
+res$status[res$padj < 0.05 & res$log2FoldChange > lfc] <- "Up"
+res$status[res$padj < 0.05 & res$log2FoldChange < -lfc] <- "Down"
+res$status[!is.na(res$delabel)] <- "Labeled"
+res$status <- factor(res$status, levels = c("NS", "Up", "Down", "Labeled"))
+
+# Define colors
+colors <- c("NS" = "grey80", "Up" = "lightsalmon", "Down" = "lightgreen", "Labeled" = "purple")
+
+pdf("Volcano_plots_Enza WT vs KO_6_24_2025.pdf", width = 7)
+with(res, plot(log2FoldChange, log10padj, pch=20, col ="grey80", main="Volcano plot : ENZA_SPEN_KO_vs_ENZA_SPEN_WT" ))
+# Add colored points: red if up, , green if down)
+with(subset(res, padj<.05 & log2FoldChange>0.6), points(log2FoldChange, log10padj, pch=20, col="lightsalmon"))
+with(subset(res, padj<.05 & log2FoldChange < -0.6), points(log2FoldChange, log10padj, pch=20, col="lightgreen"))
+with(subset(res[which(!is.na(res$delabel)), ]), points(log2FoldChange, log10padj, pch=20, col="purple"))
+temp = res[which(!is.na(res$delabel)), ]
+abline(v = 0.6 , col = "black", lty = 2)
+abline(v = -0.6, col = "black", lty = 2)
+abline(h = -log10(0.05), col = "black", lty = 2)
+temp$status =  "NOCHANGE"
+temp$status[which(temp$padj < 0.05 & abs(temp$log2FoldChange) > 0.58 )] ="sig"
+
+# Label points with the textxy function from the calibrate plot
+with(temp[which(temp$status=="sig"), ], textxy(log2FoldChange, log10padj, labs=delabel, cex=0.8) )
+dev.off()
+
+```
+## Heatmaps
+
+```{r}
+
+mrna_decreased_isr <- c(
+    "ATF4", "ATF3", "ATF5", "DDIT3", "TRIB3", 
+    "GDF15", "Chac1", "CEBPB", "ASNS"
+)
+
+# mRNA Enza spen WT vs KO - Cell Cycle and Proliferation Genes
+mrna_cell_cycle <- c(
+    "E2F5", "E2F7", "E2F8", "CDK1", "CDK2", 
+    "Cdc6", "Cdc20", "Ccnj", "Ccnb1", "Ccnb2", 
+    "Ccna2", "Chek1", "Chek2", "Bub1", "PLK1", 
+    "PLK4", "PAK3", "PAK6", "AURKA", "BORA", 
+    "ZWILCH", "TOP2A", "CDKN2b", "CDKN1a", "ORC1", "ORC6"
+)
+
+# mRNA Enza spen wt vs KO – AR Regulated DOWN Genes
+mrna_ar_down <- c(
+    "TMPRSS2", "NR3C1", "Klk3", "Sox9", "Hoxa1", 
+    "HoxA3", "HoxA4", "Hoxa5", "Hoxa6", "Hoxb3", 
+    "HoxB5", "Hoxb6", "Hoxb9"
+)
+
+
+cpm_counts = read.delim("star_hts_reverse_hg38_cpm_protein_coding_genes.txt", header=T, stringsAsFactors = F)
+rownames(cpm_counts) = cpm_counts$gene_name
+cpm_counts = cpm_counts[, -c(1:8)]
+sampleinfo  = read.delim("sampleinfo.txt", header=T, stringsAsFactors = FALSE)
+
+idx = sapply(sampleinfo[,1], function(x) grep(paste0("^cpm_", x, "_"), colnames(cpm_counts)) )
+cpm_counts = cpm_counts[, idx]
+colnames(cpm_counts) = sampleinfo$Sample.ID
+rownames(sampleinfo) = colnames(cpm_counts)
+
+sampleinfo$Replicate = gsub(" Replicate |1|2|3", "", sampleinfo$Replicate)
+sampleinfo$Replicate 
+colnames(sampleinfo)[3] = "group"
+
+keep  = which(sampleinfo$RNA.source =="Total RNA")
+cpm_counts = cpm_counts[, keep]
+sampleinfo = sampleinfo[keep, ]
+
+
+library(pheatmap)
+library(viridis)
+library(RColorBrewer)
+
+cb_blue_orange <- colorRampPalette(c("#2166AC", "#F7F7F7", "red"))(50)
+cb_green_purple <- colorRampPalette(c("#1B7837", "#F7F7F7", "#762A83"))(50)
+
+
+# Define colors for the groups
+ann_colors <- list(
+    group = c("SPEN WT" = "#66C2A5",  # blue
+              "SPEN KO" = "black"), 
+    Treatment = c("Enzalutamide" = "magenta", 
+                  "DMSO" = "cyan")
+)
+
+idx = which(sampleinfo$Treatment=="Enzalutamide"  )
+temp_sampleinfo = sampleinfo[idx, ]
+temp_cpm_counts = cpm_counts[, idx]
+temp_sampleinfo
+mat = temp_cpm_counts[match(toupper(mrna_cell_cycle), rownames(temp_cpm_counts)), ]
+
+pdf("Updated_Heatmap_cell_cycle_rna_only_enza_updated_colors_5_5_2025.pdf")
+pheatmap(mat,  scale  = "row", color = cb_blue_orange, 
+         annotation_col= temp_sampleinfo[, c("Treatment", "group")] , 
+         annotation_colors = ann_colors,
+         main = "Cell cycle")
+
+dev.off()
+
+
+mat = temp_cpm_counts[match(toupper(mrna_decreased_isr), rownames(temp_cpm_counts)), ]
+
+pdf("Updated_Heatmap_ISR_only_enza_updated_colors_5_5_2025.pdf")
+pheatmap(mat,  scale  = "row", color = cb_blue_orange, 
+         annotation_col= temp_sampleinfo[, c("Treatment", "group")] , 
+         annotation_colors = ann_colors,
+         main = "mRNA AR down")
+
+dev.off()
+
+mat = temp_cpm_counts[match(toupper(mrna_ar_down), rownames(temp_cpm_counts)), ]
+
+pdf("Updated_Heatmap_HOX_only_enza_updated_colors_5_5_2025.pdf")
+pheatmap(mat,  scale  = "row", color = cb_blue_orange, 
+         annotation_col= temp_sampleinfo[, c("Treatment", "group")] , 
+         annotation_colors = ann_colors,
+         main = "mRNA AR down")
+
+dev.off()             
+```
+
+## Dotplots 
+
+```{r}
+
+gene_sets <- c(
+    "GOBP_REGULATION_OF_CELL_POPULATION_PROLIFERATION",
+    "GOBP_WNT_SIGNALING_PATHWAY",
+    "E2F3_UP.V1_UP",
+    "REACTOME_SIGNALING_BY_RECEPTOR_TYROSINE_KINASES",
+    "KEGG_MTOR_SIGNALING_PATHWAY",
+    "BRCA1_DN.V1_DN",
+    "KEGG_NOTCH_SIGNALING_PATHWAY",
+    "CYCLIN_D1_UP.V1_UP"
+)
+
+
+df2  = read.delim("polysome_gsea.txt", header=T, stringsAsFactors = FALSE)
+
+df2 = df2[match(gene_sets,  df2[,1]), ]
+df2$FDR.q.value= as.numeric(df2$FDR.q.value)
+df2$p.adjust = -log10(df2$FDR.q.value)
+df2= df2[order(df2$p.adjust, decreasing=TRUE), ]
+
+df2$Description = df2$Gene.Set.Name
+df2$Description <- factor(df2$Description, levels=rev(unique(df2$Description)))
+df2$GeneRatio <- df2$k.K
+
+w0 = ggplot(df2, aes(x=p.adjust, y=Description, size=GeneRatio, color=p.adjust)) +
+    geom_point() + ggtitle("Polysome GSEA") + 
+    scale_color_gradient(low="red", high="blue") +
+    ylab("") + xlab("-log10(p.adjust)") +
+    theme_dose(12)
+pdf("polysome_gsea.pdf", width = 10, height =5)
+print(w0)
+dev.off()
+
+
+# GSEA 424 genes down DMSO wt vs KO
+gsea_down_dmso <- c(
+    "REACTOME_RUNX1_REGULATES_GENES_INVOLVED_IN_MEGAKARYOCYTE_DIFFERENTIATION_AND_PLATELET_FUNCTION",
+    "REACTOME_SIGNALING_BY_NUCLEAR_RECEPTORS",
+    "REACTOME_ACTIVATION_OF_ANTERIOR_HOX_GENES_IN_HINDBRAIN_DEVELOPMENT_DURING_EARLY_EMBRYOGENESIS",
+    "REACTOME_SIRT1_NEGATIVELY_REGULATES_RRNA_EXPRESSION",
+    "REACTOME_HDACS_DEACETYLATE_HISTONES",
+    "REACTOME_ESTROGEN_DEPENDENT_GENE_EXPRESSION",
+    "REACTOME_GLUCURONIDATION",
+    "KEGG_STEROID_HORMONE_BIOSYNTHESIS"
+)
+
+df2 <- lst[[3]]
+df2 = df2[match(gsea_down_dmso,  df2[,1]), ]
+df2$p.adjust = -log10(df2$FDR.q.value)
+df2= df2[order(df2$p.adjust, decreasing=TRUE), ]
+
+df2$Description = df2$Gene.Set.Name
+df2$Description = gsub("_", " ", df2$Description)
+df2$Description = gsub("REACTOME |KEGG ", " ", df2$Description)
+df2$Description <- factor(df2$Description, levels=rev(unique(df2$Description)))
+df2$GeneRatio <- df2$k.K  ##parse_ratio(df2$Overlap)
+
+w3 = ggplot(df2, aes(x=p.adjust, y=Description, size=GeneRatio, color=p.adjust)) +
+    geom_point() + ggtitle("DMSO Down") + 
+    scale_color_gradient(low="red", high="blue") +
+    ylab("") + xlab("-log10(p.adjust)") +
+    theme_dose(12)
+pdf("misgdb 424 dmso ko vs wt down.pdf", width = 13, height =5)
+print(w3)
+dev.off()
+
+# GSEA 500 genes down enza wt vs ko
+gsea_down_enza <- c(
+    "REACTOME_HDACS_DEACETYLATE_HISTONES",
+    "REACTOME_HCMV_INFECTION",
+    "REACTOME_ACTIVATED_PKN1_STIMULATES_TRANSCRIPTION_OF_AR_ANDROGEN_RECEPTOR_REGULATED_GENES_KLK2_AND_KLK3",
+    "REACTOME_ACTIVATION_OF_ANTERIOR_HOX_GENES_IN_HINDBRAIN_DEVELOPMENT_DURING_EARLY_EMBRYOGENESIS",
+    "REACTOME_PRC2_METHYLATES_HISTONES_AND_DNA",
+    "REACTOME_ESTROGEN_DEPENDENT_GENE_EXPRESSION",
+    "REACTOME_RESPONSE_OF_EIF2AK1_HRI_TO_HEME_DEFICIENCY"
+)
+df2 <- lst[[5]]
+df2 = df2[match(gsea_down_enza,  df2[,1]), ]
+df2$p.adjust = -log10(df2$FDR.q.value)
+df2= df2[order(df2$p.adjust, decreasing=TRUE), ]
+
+df2$Description = df2$Gene.Set.Name
+df2$Description = gsub("_", " ", df2$Description)
+df2$Description = gsub("REACTOME |KEGG ", " ", df2$Description)
+df2$Description <- factor(df2$Description, levels=rev(unique(df2$Description)))
+df2$GeneRatio <- df2$k.K  ##parse_ratio(df2$Overlap)
+
+w5= ggplot(df2, aes(x=p.adjust, y=Description, size=GeneRatio, color=p.adjust)) +
+    geom_point() + ggtitle("GSEA 500 genes down enza wt vs ko") + 
+    scale_color_gradient(low="red", high="blue") +
+    ylab("") + xlab("-log10(p.adjust)") +
+    theme_dose(12)
+pdf("GSEA 500 genes down enza wt vs ko.pdf", width = 13, height =5)
+print(w5)
+dev.off()
+             
+# GSEA 500 genes up enza wt vs ko
+gsea_up_enza <- c(
+    "REACTOME_CELL_CYCLE",
+    "HALLMARK_G2M_CHECKPOINT",
+    "HALLMARK_E2F_TARGETS",
+    "REACTOME_M_PHASE",
+    "REACTOME_SIGNALING_BY_RHO_GTPASES_MIRO_GTPASES_AND_RHOBTB3",
+   #"KEGG_CELL_CYCLE",
+    "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION",
+    "REACTOME_CDC6_ASSOCIATION_WITH_THE_ORC_ORIGIN_COMPLEX"
+)
+df2 <- lst[[6]]
+df2 = df2[match(gsea_up_enza,  df2[,1]), ]
+df2$p.adjust = -log10(df2$FDR.q.value)
+df2= df2[order(df2$p.adjust, decreasing=TRUE), ]
+
+df2$Description = df2$Gene.Set.Name
+df2$Description = gsub("_", " ", df2$Description)
+df2$Description = gsub("REACTOME |KEGG |HALLMARK ", " ", df2$Description)
+df2$Description <- factor(df2$Description, levels=rev(unique(df2$Description)))
+df2$GeneRatio <- df2$k.K  ##parse_ratio(df2$Overlap)
+
+w6= ggplot(df2, aes(x=p.adjust, y=Description, size=GeneRatio, color=p.adjust)) +
+    geom_point() + ggtitle("GSEA 500 genes up enza wt vs ko") + 
+    scale_color_gradient(low="red", high="blue") +
+    ylab("") + xlab("-log10(p.adjust)") +
+    theme_dose(12)
+pdf("GSEA 500 genes up enza wt vs ko.pdf", width = 10, height =5)
+print(w6)
+dev.off()
+             
+```
