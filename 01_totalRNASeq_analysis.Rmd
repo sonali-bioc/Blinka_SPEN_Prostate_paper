@@ -1,0 +1,236 @@
+---
+title: "RNASeq Analysis"
+author: "Sonali Arora"
+date: "March 11, 2026"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+```{r}
+
+rm(list=ls())
+setwd("~/hsiehlab/Sonali/Steve/polysome_seq_May2024")
+df = read.delim("star_hts_reverse_hg38_raw_protein_coding_genes.txt", 
+                header=T, stringsAsFactors = FALSE, row.names=7)
+df = df[, -c(1:8)]
+df = data.matrix(df)
+
+coldata = read.delim("sampleinfo.txt", header=T, stringsAsFactors = FALSE)
+coldata$RNA.source = gsub("Total RNA", "TotalRNA",coldata$RNA.source )
+coldata$type = coldata$Replicate
+coldata$type = gsub(" Replicate 1| Replicate 2| Replicate 3", "", coldata$type)
+coldata$type = gsub("SPEN WT", "SPEN_WT", coldata$type)
+coldata$type = gsub("SPEN KO", "SPEN_KO", coldata$type)
+coldata$Treatment = gsub("Enzalutamide", "Enza", coldata$Treatment)
+coldata$Replicate = gsub(" ", "_", coldata$Replicate)
+coldata$new_name = apply(coldata, 1, function(x) paste0(c(x["Replicate"], x["RNA.source"], x["Treatment"]), collapse="_"))
+
+idx = sapply(coldata[,1], function(x) grep(paste0("^", x, "_"), colnames(df)) )
+df = df[, idx]
+colnames(df) = coldata$new_name
+
+library(edgeR)
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+dataMtrx= mat1 = cpm(df)
+
+sampleNames = coldata$new_name
+
+# add in PCA 
+pc1= prcomp(t( dataMtrx) )
+percentVar <- (pc1$sdev^2 / sum( pc1$sdev^2 ) )*100
+percentVar= round(percentVar[1:2], 2)
+pc_data1 = data.frame(PC1=pc1$x[,1], PC2=pc1$x[,2] )
+message(" PCA =", " pc1:", percentVar[1], " pc2:", percentVar[2])
+
+
+sampleDists <- dist( t(dataMtrx))
+#sampleNames = colnames(dataMtrx)
+sampleDistMatrix <- as.matrix( sampleDists )
+rownames(sampleDistMatrix) <-sampleNames
+colnames(sampleDistMatrix) <- sampleNames
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+
+hc = hclust(sampleDists)
+#plot(hc)
+
+pc_data1 = data.frame(pc_data1, coldata )
+
+p1 = ggplot(pc_data1, aes(PC1, PC2, color=type, shape = RNA.source)) + geom_point(size=4) +
+    xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+    ylab(paste0("PC2: ",percentVar[2],"% variance"))+
+    geom_text(aes(label=sampleNames),hjust=1, vjust=2, size=4)+
+    ggtitle(paste0("PCA plot ")) + 
+    theme(plot.title = element_text(lineheight=.8, face="bold"))
+
+pdf(paste0("exploratory_plots_all_samples.pdf"), width = 10, height = 7)
+plot(hc)
+print(p1)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+res <- cor(dataMtrx)
+res = round(res, 2)
+corrplot(res, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45,addCoef.col ='white', number.cex = 0.8)
+dev.off()
+
+```
+
+## DESeq2 & pathway enrichment analysis 
+
+```{r}
+library(writexl)
+library(enrichR)
+my_enrichment_function = function(goi, title, res_folder){
+    dbs <- c("GO_Molecular_Function_2023", "GO_Cellular_Component_2023", 
+             "GO_Biological_Process_2023", "KEGG_2021_Human", "Reactome_2022")
+    enriched = enrichr( goi, dbs)
+    write_xlsx(x = enriched, path = file.path(res_folder, paste0(title, ".xlsx")) )
+    enriched
+}
+
+library(DESeq2)
+myfun = function(group1_name, group1_idx, group2_name, group2_idx){
+    rawdata = cbind(df[,group1_idx], df[, group2_idx])
+    coldata = data.frame(sampleGroup = c(rep("control", length(group1_idx)), 
+                                         rep("test", length(group2_idx))), 
+                         sampleName = colnames(rawdata) )
+    rownames(coldata) = colnames(rawdata)
+    dds <- DESeqDataSetFromMatrix(countData = rawdata, 
+                                  colData = coldata, design = ~ sampleGroup)
+    
+    keep <- rowSums(counts(dds)) >= 4
+    table(keep) 
+    
+    dds = dds[keep, ]
+    
+    dds = DESeq(dds)
+    resultsNames(dds)
+    lfc = log2(1.5)
+    res1 <- results(dds, alpha = 0.05,  contrast = c("sampleGroup", "test", "control"))
+    
+    resdf = as.data.frame(res1)
+    raw_counts = rawdata[rownames(resdf), ]
+    cpm_counts = cpm(raw_counts)
+    colnames(raw_counts) = paste0("raw_", colnames(raw_counts))
+    colnames(cpm_counts) = paste0("cpm_", colnames(cpm_counts))
+    resdf = cbind(gene = rownames(resdf), resdf[, c("log2FoldChange", "pvalue", "padj")] , cpm_counts, raw_counts)
+    
+    
+    up_genes = resdf[ which(resdf$log2FoldChange > lfc &  resdf$padj < 0.05), ]
+    down_genes = resdf[which(resdf$log2FoldChange < -lfc &  resdf$padj < 0.05), ]  
+    
+    up_genes = up_genes[order(up_genes$log2FoldChange, decreasing=T), ]
+    down_genes = down_genes[order(down_genes$log2FoldChange), ]
+    
+    
+    lst = list(all_genes = resdf, up_genes = up_genes, down_genes = down_genes)
+    fname =paste0(c("DESeq2_analysis_", group2_name, "_vs_", group1_name, "_LFC_", round(lfc,2), "_fdr_0.05"), collapse ="")
+    write_xlsx(lst, paste0(fname  , ".xlsx"))
+    
+    message(fname, ":", nrow(up_genes), ":", nrow(down_genes))
+    
+    dataMtrx = cpm(rawdata)
+    mycoldata  = bigcoldata[ c(group1_idx, group2_idx), ]
+    sampleNames = colnames(dataMtrx)
+    
+    # add in PCA 
+    pc1= prcomp(t( dataMtrx) )
+    percentVar <- (pc1$sdev^2 / sum( pc1$sdev^2 ) )*100
+    percentVar= round(percentVar[1:2], 2)
+    pc_data1 = data.frame(PC1=pc1$x[,1], PC2=pc1$x[,2] )
+    message(" PCA =", " pc1:", percentVar[1], " pc2:", percentVar[2])
+    
+    
+    sampleDists <- dist( t(dataMtrx))
+    sampleNames = colnames(dataMtrx)
+    sampleDistMatrix <- as.matrix( sampleDists )
+    rownames(sampleDistMatrix) <-sampleNames
+    colnames(sampleDistMatrix) <- sampleNames
+    colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+    
+    hc = hclust(sampleDists)
+    #plot(hc)
+    
+    pc_data1 = data.frame(pc_data1, mycoldata )
+    
+    p1 = ggplot(pc_data1, aes(PC1, PC2,color=type, shape = Treatment)) + geom_point(size=4) +
+        xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+        ylab(paste0("PC2: ",percentVar[2],"% variance"))+
+        geom_text(aes(label=sampleNames),hjust=1, vjust=2, size=4)+
+        ggtitle(paste0("PCA plot ")) + 
+        theme(plot.title = element_text(lineheight=.8, face="bold"))
+    
+    pdf(paste0("exploratory_plots_", group2_name, "_vs_", group1_name, ".pdf"), width = 10, height =7)
+    plot(hc)
+    print(p1)
+    pheatmap(sampleDistMatrix,
+             clustering_distance_rows=sampleDists,
+             clustering_distance_cols=sampleDists,
+             col=colors)
+    
+    res <- cor(dataMtrx)
+    res = round(res, 2)
+    corrplot(res, type = "upper", order = "hclust", 
+             tl.col = "black", tl.srt = 45,addCoef.col ='white', number.cex = 0.8)
+    
+    dev.off()
+    
+    
+    if(nrow(up_genes) >10){
+        a1 = my_enrichment_function( goi = rownames(up_genes), title  = paste0("Enrichr_up_reg_genes_", fname), res_folder = getwd() )
+    }else{
+        return( c(nrow(up_genes), nrow(down_genes)))
+    }
+    
+    if(nrow(down_genes) > 10){
+        b1= my_enrichment_function( goi = rownames(down_genes), title  = paste0("Enrichr_down_reg_genes_", fname), res_folder = getwd() )
+    }else{
+        return( c(nrow(up_genes), nrow(down_genes)))
+    }
+    c(nrow(up_genes), sapply(a1, nrow),   nrow(down_genes) , sapply(b1, nrow) )
+}
+
+
+coldata  = coldata[ which(coldata$RNA.source =="TotalRNA"), ]
+bigcoldata = coldata
+setwd("~/hsiehlab/Sonali/Steve/polysome_seq_May2024/totalRNA_analysis")
+
+group1_name =  "dmso_SPEN_WT"
+group1_idx = which(coldata$type=="SPEN_WT" & coldata$Treatment=="DMSO")
+group2_name =  "Enza_SPEN_WT"
+group2_idx =which(coldata$type=="SPEN_WT" & coldata$Treatment=="Enza")
+coldata[group1_idx, ]
+coldata[group2_idx, ]
+a1 = myfun(group1_name , group1_idx, group2_name, group2_idx)
+
+group1_name =  "dmso_SPEN_KO"
+group1_idx = which(coldata$type=="SPEN_KO" & coldata$Treatment=="DMSO")
+group2_name =  "Enza_SPEN_KO"
+group2_idx =which(coldata$type=="SPEN_KO" & coldata$Treatment=="Enza")
+coldata[group1_idx, ]
+coldata[group2_idx, ]
+a2 = myfun(group1_name , group1_idx, group2_name, group2_idx)
+
+group1_name =  "dmso_SPEN_WT"
+group1_idx = which(coldata$type=="SPEN_WT" & coldata$Treatment=="DMSO")
+group2_name =  "dmso_SPEN_KO"
+group2_idx =which(coldata$type=="SPEN_KO" & coldata$Treatment=="DMSO")
+coldata[group1_idx, ]
+coldata[group2_idx, ]
+a3 = myfun(group1_name , group1_idx, group2_name, group2_idx)
+
+
+group1_name =  "ENZA_SPEN_WT"
+group1_idx = which(coldata$type=="SPEN_WT" & coldata$Treatment=="Enza")
+group2_name =  "ENZA_SPEN_KO"
+group2_idx =which(coldata$type=="SPEN_KO" & coldata$Treatment=="Enza")
+coldata[group1_idx, ]
+coldata[group2_idx, ]
+a4 = myfun(group1_name , group1_idx, group2_name, group2_idx)
+```
