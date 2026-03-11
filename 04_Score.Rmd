@@ -1,0 +1,243 @@
+---
+title: "Score"
+author: "Sonali Arora"
+date: "March 11, 2026"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+
+```{r}
+
+library(readxl)
+library(ggpubr)
+library(ggplot2)
+library(GSVA)
+
+up3 = c(
+    "ALB",    "UGT2B28",  "HNF4G",    "PTGFR", "TERT",    "GTSF1",  "CCDC59",    "CCNJ",
+    "MTBP",    "TEAD2",  "MAP2",    "VIM", "NEK2" ,    "BORA",  "E2F7",    "PLK4",
+    "CDK1",    "KLF7", "LIN7A",    "PAK6", "HASPIN"
+)
+
+tpm = readRDS("batch_corrected_log2tpm_prostate_4datasets_no_gtex_no_pdx.rds")
+umap_data1 = readRDS("metadata_prostate_4datasets_no_gtex_no_pdx.rds")
+
+g1 =  which(umap_data1$dataset =="tcga-matched-normal")
+g2 = which(umap_data1$dataset =="TCGA")
+g3 = which(umap_data1$dataset =="su2c-east")
+g4= which(umap_data1$dataset =="su2c-west")
+g5= which(umap_data1$dataset =="uw-TAN")
+
+tpm = tpm[ , c( g1, g2, g3, g4, g5)]
+umap_data1 = umap_data1[ c( g1, g2, g3,g4, g5), ]
+
+set1 = list(up_new =up3)
+
+
+gsvapar <- gsvaParam(tpm, set1, maxDiff=TRUE)
+res <- gsva(gsvapar) 
+
+umap_data1 = cbind(umap_data1, t(res))
+rownames(umap_data1) = colnames(tpm)
+
+umap_data1$group = factor(umap_data1$group, levels = c("tcga-matched-normal", "TCGA", "Met") )
+
+p1 = ggplot(umap_data1, aes(x = group, y = up_new, fill = group)) +
+    geom_boxplot()  + theme_bw() + ggtitle( "Sig using Steve chosen  up-reg genes") + 
+    scale_fill_manual(values = c("darkgreen", "cyan", "red"))
+
+pdf("GSVA_boxplots_spen_signature_7_1_2025_21genes.pdf", width = 10)
+print(p1)
+dev.off()
+
+write.table(umap_data1, "spen_sig_21genes.txt", sep="\t",
+            quote=F, row.names=F, col.names=T)
+```
+## Survival Analysis  for SU2C 
+
+```{r}
+library(readxl)
+library(dplyr)
+library(rtracklayer)
+library(DESeq2)
+library(survminer)
+library(survival)
+
+
+su2c = read.delim(file.path(Resdir, "CRPC_datasets", "SU2C_WCDT", "SU2C_WCDT_raw_counts.txt"), check.names=F, row.names=1)
+su2c_EAST = read.delim(file.path(Resdir, "CRPC_datasets", "SU2C_ECDT", "SU2C_ECDT_raw_counts.txt"), check.names=F, row.names=1)
+
+info = read_xlsx("~/hsiehlab/Sonali/Steve/S2UC_metadata/pnas.1902651116.sd01 (1).xlsx", sheet=1)
+sheet2 = read_xlsx("~/hsiehlab/Sonali/Steve/S2UC_metadata/pnas.1902651116.sd01 (1).xlsx", sheet=2)
+
+# matching gene expression data to survival data
+sample_names <- colnames(su2c_EAST)
+info$`Sample ID` <- as.character(info$`Sample ID`)
+sheet2$`Sample ID` <- as.character(sheet2$`Sample ID`)
+matched_info <- info[info$`Sample ID` %in% sample_names, ]
+matched_survival <- matched_info %>%
+  left_join(sheet2, by = "Sample ID")
+
+# create TPM counts 
+gtf = import("gencode.v39.primary_assembly.annotation.gtf" )
+gtf  = gtf[which(gtf$type =="gene"), ]
+gtf  = gtf[which(gtf$gene_type =="protein_coding"), ]
+
+cs = intersect( rownames(su2c_EAST), gtf$gene_name)
+su2c_EAST = su2c_EAST[ cs,]
+gtf = gtf[ match(cs, gtf$gene_name), ]
+
+gw = width(gtf)
+y <- DGEList(su2c_EAST)
+y$genes <- data.frame(Length=gw)
+rpkm_vals = rpkm(y )
+log2_rpkm_vals = log2(rpkm_vals +1)
+tpm_vals = apply(rpkm_vals, 2, function(x){
+  (x/sum(x))*10^6
+})
+log2_tpm_vals = log2(tpm_vals +1)
+
+chosen_goi = intersect(chosen_goi, rownames(log2_tpm_vals))
+
+# median
+l2 = lapply( chosen_goi, function(my_goi){
+  data = data.frame( matched_survival, gene = log2_tpm_vals[ my_goi, ])   
+  gene_summary <- summary(data$gene)
+  low <- which(data$gene < gene_summary[4])
+  high <- which(data$gene > gene_summary[4])
+  
+  data$status <- NA_character_
+  data$status[low] <- "low"
+  data$status[high] <- "high"
+  data <- data[!is.na(data$status), ]
+  
+  if (nrow(data) == 0 || length(unique(data$status)) < 2) {
+    return(list(pval = NA, favored_group = NA, hr = NA, 
+                summary = as.numeric(gene_summary)))
+  }
+  
+  # Ensure status is a factor
+  data$status <- factor(data$status, levels = c("low", "high"))
+    # Prepare survival variables
+  data$os.months <-  as.numeric( data[, 13]) 
+  data$event <- as.numeric(data[, 12])
+
+  fit <- survfit(Surv(os.months, event) ~ status, data = data)
+  pval <- surv_pvalue(fit, data = data)$pval
+    
+  b2 = ggsurvplot(
+    fit,
+    data = data,
+    pval = TRUE,
+    pval.method = TRUE,
+    risk.table = TRUE,
+    conf.int = TRUE,
+    palette = c("#E69F00", "#56B4E9"), # orange and blue
+    xlab = "Time (months)",
+    ylab = "Survival probability",
+    title = paste0( "SU2C :", my_goi, "(median)"),
+    legend.title = "Group",
+    legend.labs = c("Low", "High"),
+    risk.table.y.text.col = TRUE,
+    risk.table.y.text = FALSE
+  )
+ b2
+})
+
+```
+
+## Survival analysis for TCGA 
+
+```{r}
+
+library(SummarizedExperiment)
+library(DESeq2)
+library(ggpubr)
+library(TCGAbiolinks)
+library(survminer)
+library(survival)
+library(edgeR)
+
+gdc_annotation = read.delim("gdc_gencode.v22.annotation.txt" , header=T, stringsAsFactors = FALSE)
+gdc_annotation  = gdc_annotation[which(gdc_annotation$gene_type =="protein_coding"), ]
+gdc_annotation$gene_id2 = sapply( strsplit(gdc_annotation$gene_id, "[.]"), function(x) x[1])
+
+getTPM = function(exon_mat, gtf){
+  
+  gw = width(gtf)
+  y <- DGEList(exon_mat)
+  y$genes <- data.frame(Length=gw)
+  rpkm_vals = rpkm(y )
+  log2_rpkm_vals = log2(rpkm_vals +1)
+  tpm_vals = apply(rpkm_vals, 2, function(x){
+    (x/sum(x))*10^6
+  })
+  log2_tpm_vals = log2(tpm_vals +1)
+  log2_tpm_vals
+}
+
+getVST = function(exon_mat){
+  vst_counts = DESeq2::vst(exon_mat)
+  vst_counts
+}
+
+fname = "gdc_TCGA-PRAD_counts_10_28_2019.Rdata"
+cancer = get(load(fname))
+common_genes = intersect(gdc_annotation$gene_id2, rownames(cancer))
+cancer = cancer[common_genes, ]
+gtf = rowRanges(cancer)
+df = assay(cancer)
+
+rm= which(duplicated(gtf$external_gene_name))
+if(length(rm)!=0){
+  gtf = gtf[-rm,]
+  df = df[-rm, ]
+}
+rownames(df) = gtf$external_gene_name
+
+coldata = as.data.frame(colData(cancer))
+
+# check the ordering , should be true
+identical(colnames(df), rownames(coldata))
+
+mycoldata  = cbind(coldata[, c("days_to_death" , "vital_status", "days_to_last_follow_up")])
+
+# make tpm's for all 
+tcga_tpm = getTPM(df, gtf)
+goi = "SPEN"
+
+idx = which(substr(colnames(df), 14, 15)==11)
+matched_normal_idx = idx
+
+tcga_tpm= tcga_tpm[, -matched_normal_idx]
+mycoldata= mycoldata[ -matched_normal_idx, ]
+
+# median 
+t2 = lapply(chosen_goi, function(goi){
+  message(goi)
+  trans = cbind(gene = tcga_tpm[goi, ],  mycoldata )
+  trans$gene = as.numeric(trans$gene)
+  
+  d1 = trans
+  idx <- which(d1$gene >= median(d1$gene))
+  d1$gene_status <- rep("low", nrow(d1))
+  d1$gene_status[idx] <- "High"
+  
+  high = which(d1$gene_status =="High")
+  low = which(d1$gene_status =="low")
+  message( goi, ":", nrow(trans), ":", length(high) ,":", length(low))
+  
+  if(length(low)==0 | length(high)==0){
+    return()
+  }
+  
+  p1 = TCGAanalyze_survival(data  = d1, clusterCol="gene_status", 
+                            filename = NULL, 
+                            color = c("red" , "darkgreen", "blue"), height = 5, width=10)
+  p1 = p1 + ggtitle( paste0("TCGA-PRAD:",   goi, "(median)") )
+  p1
+})                                 
+```
