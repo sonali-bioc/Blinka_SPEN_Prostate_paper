@@ -1,0 +1,126 @@
+
+
+
+```{r}
+rm(list=ls())
+library(edgeR)
+library(readxl)
+library(writexl)
+library(xtail)
+mainDir = "~/hsiehlab/Sonali/Steve/polysome_seq_May2024"
+setwd(mainDir)
+
+resDir = file.path(mainDir,  "TE_files")
+
+countData <- read.delim("star_hts_reverse_hg38_cpm_protein_coding_genes.txt", header=T, stringsAsFactors = FALSE, row.names=7)
+rawData <- read.delim("star_hts_reverse_hg38_raw_protein_coding_genes.txt", header=T, stringsAsFactors = FALSE, row.names=7)
+countData = countData[, grep("SB", colnames(countData))]
+rawData = rawData[, grep("SB", colnames(rawData))]
+identical(colnames(rawData), colnames(countData))
+identical( rownames(countData), rownames(rawData))
+
+
+coldata = read.delim("sampleinfo.txt", header=T, stringsAsFactors = FALSE)
+coldata$RNA.source = gsub("Total RNA", "TotalRNA",coldata$RNA.source )
+coldata$type = coldata$Replicate
+coldata$type = gsub(" Replicate 1| Replicate 2| Replicate 3", "", coldata$type)
+coldata$type = gsub("SPEN WT", "SPEN_WT", coldata$type)
+coldata$type = gsub("SPEN KO", "SPEN_KO", coldata$type)
+coldata$Treatment = gsub("Enzalutamide", "Enza", coldata$Treatment)
+coldata$Replicate = gsub(" ", "_", coldata$Replicate)
+coldata$new_name = apply(coldata, 1, function(x) paste0(c(x["Replicate"], x["RNA.source"], x["Treatment"]), collapse="_"))
+
+idx = sapply(coldata[,1], function(x) grep(paste0("^", x, "_"), colnames(rawData)) )
+countData = countData[, idx]
+rawData = rawData[, idx]
+
+colnames(rawData) = coldata$new_name
+colnames(countData) = coldata$new_name
+
+mat1 = rawData[, grep("80S", coldata[,2]) ]
+mat2= rawData[, grep("highpoly", coldata[,2]) ]
+mat3 = rawData[, grep("lowpoly", coldata[,2]) ]
+mypoly = mat1 +mat2 +mat3
+colnames(mypoly) = gsub("80S", "totalPoly", colnames(mypoly))
+
+all_rna = rawData[, grep("RNA", colnames(rawData))]
+all_rna = all_rna[, grep("Enza", colnames(all_rna))]
+          
+# (hp +80s+lp)/rna
+rawData  = cbind(mypoly, all_rna)
+rawData= round(rawData, 0)
+countDat= cpm(rawData) # this one is new with (hp +80s+lp)/rna
+
+# make ratio for later. 
+te_mat =  data.frame(
+    te_rep1_group1 = countData[, 1] / countData[,7],  
+    te_rep2_group1 = countData[, 2] / countData[,8],  
+    te_rep3_group1 = countData[, 3]  / countData[,9], 
+    te_rep1_group2 = countData[, 4] / countData[,10],  
+    te_rep2_group2 = countData[, 5] / countData[,11], 
+    te_rep3_group2 = countData[, 6] / countData[,12] )  
+
+
+te_mat$avg_te_group1= rowMeans(te_mat[, c("te_rep1_group1", "te_rep2_group1", "te_rep3_group1")])
+te_mat$avg_te_group2 = rowMeans(te_mat[, c("te_rep1_group2", "te_rep2_group2", "te_rep3_group2")])
+
+temp_countData = rawData
+temp_cpm_counts = countData
+
+colnames(temp_countData) = paste0("raw_", colnames(temp_countData))
+colnames(temp_cpm_counts) = paste0("cpm_", colnames(temp_cpm_counts))
+
+finaldf = cbind(gene = rownames(rawData), 
+                te_mat, temp_cpm_counts, temp_countData)
+
+res_fname = "TE_data_Highpoly_lowPoly_80s_normalize_totalRNA.txt"
+write.table(finaldf, file.path( res_fname), 
+            sep ="\t", quote=FALSE, row.names = FALSE, col.names=TRUE)
+
+## run xtail 
+all_data = finaldf
+data = all_data[, grep("raw_", colnames(all_data))]
+colnames(data) = gsub("raw_", "", colnames(data))
+
+rp.idx = grep("totalPoly", colnames(data))
+test.rp = data[, rp.idx]
+
+rna.idx = grep("TotalRNA", colnames(data))
+test.rna = data[, rna.idx]
+
+rm1 = which(rowSums(test.rna)==0)
+rm2 =which(rowSums(test.rp)==0)
+rm = unique(c(rm1, rm2))
+if(length(rm)!=0){
+    message("removing genes:", length(rm))
+    test.rp = test.rp[-rm, ]
+    test.rna = test.rna[-rm, ]
+}
+
+test.group = c(rep("A", 3),rep("B", 3) )
+colnames(test.rp) = c(paste0("control", 1:3), paste0("treatment", 1:3))
+colnames(test.rna) = colnames(test.rp)
+
+condition  <- c(rep("control", 3), rep("treatment",3))
+test.results <- xtail(test.rna,test.rp,condition,bins=1000)
+
+xtail_res = resultsTable(test.results)
+xtail_res = xtail_res[ ,grep("_v1|_v2", colnames(xtail_res))]
+xtail_res$FDR_v2 = p.adjust(xtail_res$pvalue_v2, method="BH")
+
+xtail_res = xtail_res[, c("log2FC_TE_v2", "pvalue_v2", "FDR_v2")]
+colnames(xtail_res) = paste0("xtail_", colnames(xtail_res))
+xtail_res = xtail_res[ rownames(all_data), ]
+
+up = which(xtail_res$xtail_log2FC_TE_v2  > log2(1.25) & xtail_res$xtail_FDR_v2  < 0.05) 
+down = which(xtail_res$xtail_log2FC_TE_v2  < - log2(1.25) & xtail_res$xtail_FDR_v2  < 0.05)
+
+res_fname = paste0("xtail_", res_fname)
+
+message(res_fname,":", length(up),":", length(down))
+
+writedf = cbind(gene = rownames(all_data), xtail_res, all_data )
+writedf = writedf[ order(writedf$xtail_FDR_v2, decreasing=FALSE) , ]
+write.table(writedf, res_fname, sep ="\t", quote=FALSE, row.names=FALSE, col.names=TRUE)
+             
+```
