@@ -34,9 +34,6 @@ colnames(df) = coldata$new_name
 rownames(coldata) = colnames(df)
 cpm_counts = cpm(df)
 
-
-
-
 sigs = read.delim("~/hsiehlab/Sonali/Steve/Joshi_cancer_cell_sigs.txt", header=T, stringsAsFactors = FALSE)
 
 lset = list(  
@@ -65,12 +62,7 @@ writedf = cbind( sample = colnames(res2), t(res2))
 write.table(writedf, "GSVA_scores.txt", sep ="\t", 
             quote=F,  col.names=T, row.names=F)
 
-             
-
 ```
-
-
-
 
 ## Make the figure
 
