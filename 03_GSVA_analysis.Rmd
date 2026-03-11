@@ -1,0 +1,156 @@
+---
+title: "GSVA Analysis & development of SPEN score"
+author: "Sonali Arora"
+date: "Aug 11, 2025"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+
+## calculate scores 
+
+```{r}
+library(GSVA)
+library(edgeR)
+
+df = read.delim("star_hts_reverse_hg38_raw_protein_coding_genes.txt", 
+                header=T, stringsAsFactors=F, row.names=7)
+df = df[, -c(1:8)]
+coldata = read.delim("sampleinfo.txt", header=T, stringsAsFactors = FALSE)
+coldata$RNA.source = gsub("Total RNA", "TotalRNA",coldata$RNA.source )
+coldata$type = coldata$Replicate
+coldata$type = gsub(" Replicate 1| Replicate 2| Replicate 3", "", coldata$type)
+coldata$type = gsub("SPEN WT", "SPEN_WT", coldata$type)
+coldata$type = gsub("SPEN KO", "SPEN_KO", coldata$type)
+coldata$Treatment = gsub("Enzalutamide", "Enza", coldata$Treatment)
+coldata$Replicate = gsub(" ", "_", coldata$Replicate)
+coldata$new_name = apply(coldata, 1, function(x) paste0(c(x["Replicate"], x["RNA.source"], x["Treatment"]), collapse="_"))
+
+idx = sapply(coldata[,1], function(x) grep(paste0("^", x, "_"), colnames(df)) )
+df = df[, idx]
+colnames(df) = coldata$new_name
+
+rownames(coldata) = colnames(df)
+cpm_counts = cpm(df)
+
+
+
+
+sigs = read.delim("~/hsiehlab/Sonali/Steve/Joshi_cancer_cell_sigs.txt", header=T, stringsAsFactors = FALSE)
+
+lset = list(  
+"RM-BASAL-PAM50-SIG" = c("FGFBP1",
+             "TP63", "TRIM29", "ITGB4",  "PTTG1",
+            "CDC20", "ORC6L",  "KIF2C",  "UBE2C",
+            "MELK", "BIRC5", "NUF2",    "CEP55",
+            "EXO1", "CENPF", "NDC80",     "TYMS",
+           "UBE2T","ANLN", "CCNB1",     "RRM2",  "MKI67"), 
+"RM-LUMINAL-PAM50-SIG" = c("ESR1","CXXC5",  "MLPH", "MAPT",  "NAT1",
+             "PGR",   "BCL2", "FOXA1", "CDC6","MDM2",  "MMP11", "BLVRA")   , 
+ARG.6 = c( "AR" ,     "KLK2",    "KLK3" ,   "NKX3-1" , "TMPRSS2", "PMEPA1" ), 
+NE.10 = c( "SYP" ,   "CHGA"  , "CHGB",   "NKX2-1", "ENO2"  , "ELAVL4" ,"SCG3",   "PCSK1" ,
+      "SCN3A" , "CHRNB2"  ), 
+CCP.31 = c(
+      "ASF1B",  "ASPM" ,  "BIRC5",  "BUB1B" , "CDC20",  "CDCA3" , "CDCA8" , "CDK1"  ,
+      "CDKN3",  "CENPF" , "CENPM",  "CEP55" , "DLGAP5", "DTL"  ,  "FOXM1",  "PCLAF" ,
+      "KIF11" , "KIF20A", "MCM10" , "NUSAP1", "ORC6",   "PBK" ,   "PLK1" ,  "PRC1" , 
+      "PTTG1" , "RAD51" , "RAD54L", "RRM2" ,  "SKA1"  , "TK1" ,   "TOP2A" ), 
+adult.stem.cell = sigs[which(sigs[,2]!=""),2]  )
+
+gsvapar <- gsvaParam(cpm_counts, lset, maxDiff=TRUE)
+res2 <- gsva(gsvapar) 
+
+writedf = cbind( sample = colnames(res2), t(res2))
+write.table(writedf, "GSVA_scores.txt", sep ="\t", 
+            quote=F,  col.names=T, row.names=F)
+
+             
+
+```
+
+
+
+
+## Make the figure
+
+```{r}
+library(edgeR)
+library(ComplexHeatmap)
+library(circlize)
+
+setwd("~/hsiehlab/Sonali/Steve/polysome_seq_May2024")
+df = read.delim("star_hts_reverse_hg38_raw_protein_coding_genes.txt", 
+                header=T, stringsAsFactors=F, row.names=7)
+df = df[, -c(1:8)]
+
+coldata = read.delim("sampleinfo.txt", header=T, stringsAsFactors = FALSE)
+coldata$RNA.source = gsub("Total RNA", "TotalRNA",coldata$RNA.source )
+coldata$type = coldata$Replicate
+coldata$type = gsub(" Replicate 1| Replicate 2| Replicate 3", "", coldata$type)
+coldata$type = gsub("SPEN WT", "SPEN_WT", coldata$type)
+coldata$type = gsub("SPEN KO", "SPEN_KO", coldata$type)
+coldata$Treatment = gsub("Enzalutamide", "Enza", coldata$Treatment)
+coldata$Replicate = gsub(" ", "_", coldata$Replicate)
+coldata$new_name = apply(coldata, 1, function(x) paste0(c(x["Replicate"], x["RNA.source"], x["Treatment"]), collapse="_"))
+
+idx = sapply(coldata[,1], function(x) grep(paste0("^", x, "_"), colnames(df)) )
+df = df[, idx]
+colnames(df) = coldata$new_name
+rownames(coldata) = colnames(df)
+
+cpm_counts = cpm(df)
+score1 = read.delim("GSVA_scores.txt", header=T, stringsAsFactors = F, row.names = 1)
+
+rna = which(coldata$RNA.source == "TotalRNA" & coldata$Treatment =="Enza")
+coldata2 = coldata[rna, ]
+           
+only_rna_result2 <- score1[ match( rownames(coldata2), rownames(score1)), ]
+
+chosen_sigs1 = c("CCP.31" , "ARG.6", "NE.10")
+chosen_sigs2 = c( "adult.stem.cell", "RM.BASAL.PAM50.SIG" , "RM.LUMINAL.PAM50.SIG")
+
+ann_colors = list(type =c(SPEN_WT ="#66C2A5", SPEN_KO= "black"), Treatment = c("Enza" = "magenta"))
+coldata2$type = factor(coldata2$type, levels = c("SPEN_WT", "SPEN_KO"))
+
+mat1 <- only_rna_result2[, chosen_sigs1]
+mat2 <- only_rna_result2[, chosen_sigs2]
+
+# Prepare annotation
+coldata2$type <- factor(coldata2$type, levels = c("SPEN_WT", "SPEN_KO"))
+ha = HeatmapAnnotation(
+  df = coldata2[, c("type", "Treatment"), drop = FALSE],
+  col = list(
+    type = c(SPEN_WT = "#66C2A5", SPEN_KO = "black"),
+    Treatment = c(Enza = "magenta")
+  )
+)
+
+# Define color scales
+col_fun1 <- colorRamp2(c(min(mat1), 0, max(mat1)), c("blue", "white", "red"))
+col_fun2 <- colorRamp2(c(min(mat2), 0, max(mat2)), c("cyan", "black", "yellow"))
+
+# Create heatmaps
+ht1 <- Heatmap(t(mat1),
+               name = "Sig1",
+               col = col_fun1,
+               cluster_rows = FALSE,
+               cluster_columns = FALSE,
+               show_column_names = FALSE,
+               top_annotation = ha)
+
+ht2 <- Heatmap(t(mat2),
+               name = "Sig2",
+               col = col_fun2,
+               cluster_rows = FALSE,
+               cluster_columns = FALSE,
+               show_column_names = FALSE,
+               top_annotation = NULL)  # use same annotation only once
+
+
+pdf("Updated_figure_enza_7.15.2025.pdf", width = 5, height = 5)
+draw(ht1 %v% ht2,
+     heatmap_legend_side = "right", 
+     annotation_legend_side = "right")
+dev.off()
+```
